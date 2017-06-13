@@ -66,15 +66,6 @@ process_execute (const char *file_name)
        &exec is a pointer to the auxiliary information */
   tid = thread_create (thread_name, PRI_DEFAULT, start_process, &exec);
   
-  if (tid != TID_ERROR){
-      sema_down(&exec.load_done);
-      if(&exec.success){
-          list_push_back(&thread_current() -> children, &exec.wait_status->elem);
-      }
-      else{
-          tid= TID_ERROR;
-      }
-  }
   /* =======================
      Code to be added here to handle the case when tid != TID_ERROR.
      Several things to do here:
@@ -83,6 +74,21 @@ process_execute (const char *file_name)
      3. If successful, put the wait_status of the child process into the children list.
      4. Otherwise, tid = TID_ERROR.
      ======================== */
+  
+  if (tid != TID_ERROR){
+      //Wait for the new user program to be loaded successfully
+      sema_down(&exec.load_done);
+      
+      //If successful, put the wait_status of the child process into the children list.
+      //Otherwise, tid = TID_ERROR.
+      if(&exec.success){
+          list_push_back(&thread_current() -> children, &exec.wait_status->elem);
+      }
+      else{
+          tid= TID_ERROR;
+      }
+  }
+  
 
   return tid;
 }
@@ -112,16 +118,20 @@ static void start_process (void *exec_)
      ======================== */
   if (success)
   {   
+      //allocate kernel memory space to hold the wait_status
       thread_current()->wait_status = malloc(sizeof *exec->wait_status);
       exec->wait_status = thread_current()->wait_status;
       
+      //initialize wait_status
       lock_init (&exec->wait_status->lock);
       exec->wait_status->ref_cnt = 2;
       exec->wait_status->tid = thread_current()->tid;
       sema_init(&exec->wait_status->dead,0);
       
+      //Indicate in the execution status that loading is successful.
       exec->success = success;
       
+      //Stop the parent process from waiting for the child process to be loaded.
       sema_up (&exec->load_done);
   }
 
@@ -141,13 +151,15 @@ static void start_process (void *exec_)
 /* Releases one reference to CS and, if it is now unreferenced, frees it. */
 static void release_child (struct wait_status *cs)
 {
+    //Obtains lock to protect ref_cnt then release after decrementing
     lock_acquire(&cs->lock);
     int ref_cnt = --cs->ref_cnt;
     lock_release(&cs->lock);
     
+    //cs is now unreferenced so free
     if(ref_cnt == 0){
         free(cs);
-        process_exit();
+        //process_exit();
     }
 }
 
@@ -163,7 +175,15 @@ process_wait (tid_t child_tid)
     struct thread *cur = thread_current ();
     struct list_elem *e;
     
-    
+     /* =======================
+      Code to be added here to perform the following
+      1. Go through each child one by one.
+      2. Check whether a child process is the one to be waited for.
+      3. Wait for the child process to become dead.
+      4. Obtain exit code from the wait_status of the child process.
+      5. Call release_child().
+      6. Return the exit code.
+      ======================== */
     for(e = list_begin(&cur->children); e != list_end(&cur->children); e = list_next(e))
     {
         struct wait_status *cs = list_entry(e, struct wait_status, elem);
@@ -175,17 +195,7 @@ process_wait (tid_t child_tid)
             return exit_code;
         }
     }
-  /* =======================
-      Code to be added here to perform the following
-      1. Go through each child one by one.
-      2. Check whether a child process is the one to be waited for.
-      3. Wait for the child process to become dead.
-      4. Obtain exit code from the wait_status of the child process.
-      5. Call release_child().
-      6. Return the exit code.
-      ======================== */
-
-  return -1;
+    return -1;
 }
 
 /* Free the current process's resources. */
@@ -205,16 +215,6 @@ process_exit (void)
       printf ("%s: exit(%d)\n", cur->name, cs->exit_code);
   }
   
-  sema_up(&cur->wait_status->dead);
-  
-  if(!list_empty(&cur->children)){
-    for(e = list_begin(&cur->children); e != list_end(&cur->children); e = list_remove(e))
-    {
-       release_child(list_entry(e, struct wait_status, elem));
-       
-    }
-    release_child(&cur->wait_status);
-  }
   /* =======================
       Code to be added here to perform the following
       1. Notify the parent process that this process is dead.
@@ -222,6 +222,20 @@ process_exit (void)
       3. Go through the child list.
       4. Release a reference to the wait_status of each child process.
       ======================== */
+  
+  //Notify the parent process that this process is dead.
+  sema_up(&cur->wait_status->dead); 
+  
+  if(!list_empty(&cur->children)){
+    //Release a reference to the wait_status of this process.
+    release_child(&cur->wait_status);
+    
+    for(e = list_begin(&cur->children); e != list_end(&cur->children); e = list_remove(e))
+    {
+        //Release a reference to the wait_status of each child process.
+        release_child(list_entry(e, struct wait_status, elem));
+    }
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
